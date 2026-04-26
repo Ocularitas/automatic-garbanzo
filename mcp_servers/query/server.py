@@ -13,6 +13,7 @@ from rules.registry import all_rules, get_rule
 from shared.config import get_settings
 from shared.db import session_scope
 from shared.identity import current_identity
+from shared.urls import build_document_url
 
 log = logging.getLogger(__name__)
 
@@ -124,6 +125,13 @@ def _record_envelope() -> dict[str, Any]:
             "A contract record is split across one set of typed scalar columns "
             "and four JSONB blobs. Read from the column most appropriate to "
             "the question."
+        ),
+        "document_url": (
+            "Every result row that references a document also includes a "
+            "`document_url` constructed from PUBLIC_BASE_URL. For results that "
+            "have a page (vector hits, clause evidence), the URL ends in "
+            "`#page=N`. Render these as clickable links — the chat user can "
+            "open the source PDF in their browser, jumped to the right page."
         ),
         "promoted_columns": {
             "description": (
@@ -263,7 +271,7 @@ def vector_search(
     )
     return {
         "hits": [
-            {
+            _maybe_with_url({
                 "document_id": str(h.document_id),
                 "chunk_id": str(h.chunk_id),
                 "chunk_index": h.chunk_index,
@@ -273,7 +281,7 @@ def vector_search(
                 "rule_id": h.rule_id,
                 "file_path": h.file_path,
                 "snippet": h.text[:600],
-            }
+            }, page=h.page_start)
             for h in hits
         ]
     }
@@ -337,8 +345,9 @@ def query_contracts_structured(
         cursor=cursor,
         group_id=identity.group_id,
     )
+    # No specific page on a structured query; document_url is the bare URL.
     return {
-        "rows": [_jsonable(r) for r in rows],
+        "rows": [_maybe_with_url(_jsonable(r)) for r in rows],
         "next_cursor": next_cursor,
         "has_more": next_cursor is not None,
     }
@@ -358,7 +367,22 @@ def get_contract(contract_id: str) -> dict[str, Any]:
     row = store.get_contract(UUID(contract_id), group_id=identity.group_id)
     if not row:
         return {"error": f"Contract {contract_id} not found"}
-    return _jsonable(row)
+    payload = _maybe_with_url(_jsonable(row))
+    # Enrich each source_links entry with a page-anchored URL so a chat
+    # client can cite per-clause without a follow-up call.
+    source_links = payload.get("source_links")
+    if isinstance(source_links, dict) and payload.get("file_path"):
+        enriched: dict[str, Any] = {}
+        for field_name, link in source_links.items():
+            if isinstance(link, dict):
+                page = link.get("page")
+                url = build_document_url(payload["file_path"],
+                                         page=int(page) if page else None)
+                enriched[field_name] = {**link, "document_url": url} if url else link
+            else:
+                enriched[field_name] = link
+        payload["source_links"] = enriched
+    return payload
 
 
 @mcp.tool()
@@ -381,7 +405,7 @@ def list_contracts(
         limit=limit,
         group_id=identity.group_id,
     )
-    return {"contracts": [_jsonable(r) for r in rows]}
+    return {"contracts": [_maybe_with_url(_jsonable(r)) for r in rows]}
 
 
 @mcp.tool()
@@ -420,7 +444,16 @@ def get_clause_evidence(
         limit=limit,
         group_id=identity.group_id,
     )
-    return {"contracts": [_jsonable(r) for r in rows]}
+    # Each row has a `page` from the source_link; thread it into document_url.
+    return {
+        "contracts": [
+            _maybe_with_url(
+                _jsonable(r),
+                page=int(r["page"]) if r.get("page") else None,
+            )
+            for r in rows
+        ]
+    }
 
 
 @mcp.tool()
@@ -455,7 +488,8 @@ def find_clause_gaps(
         limit=limit,
         group_id=identity.group_id,
     )
-    return {"contracts": [_jsonable(r) for r in rows]}
+    # No specific page on a "this clause is absent" answer.
+    return {"contracts": [_maybe_with_url(_jsonable(r)) for r in rows]}
 
 
 # --- helpers ------------------------------------------------------------------
@@ -477,6 +511,26 @@ def _jsonable(row: dict[str, Any]) -> dict[str, Any]:
         else:
             out[k] = v
     return out
+
+
+def _maybe_with_url(
+    row: dict[str, Any],
+    *,
+    page: int | None = None,
+    file_path_key: str = "file_path",
+) -> dict[str, Any]:
+    """Inject `document_url` into a result row when PUBLIC_BASE_URL is set.
+
+    Looks up the file path under `file_path_key`, builds a URL with optional
+    `#page=N` anchor, and stores it as `document_url`. If the URL can't be
+    built (no PUBLIC_BASE_URL, or path outside watch folder), the key is
+    omitted — better silent-omit than a `null` the agent might cite.
+    """
+    url = build_document_url(row.get(file_path_key), page=page)
+    if url:
+        row = dict(row)
+        row["document_url"] = url
+    return row
 
 
 def main() -> None:

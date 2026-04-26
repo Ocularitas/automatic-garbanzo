@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     query_mcp_port: int = 8765
     query_mcp_bearer_token: str = "demo-token-change-me"
 
+    # Public base URL the deployment is reachable on, e.g.
+    #   https://cipoc-abc123.uksouth.cloudapp.azure.com/<bearer-token>
+    # Used by the MCP server to construct clickable `document_url` values
+    # in tool responses. Empty in local dev — URLs are simply omitted then.
+    public_base_url: str = ""
+
 
 def get_settings() -> Settings:
     return Settings()

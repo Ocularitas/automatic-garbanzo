@@ -73,3 +73,9 @@ def test_schema_payload_includes_record_envelope() -> None:
     # The Decimal-serialization convention is called out so callers don't get
     # caught by str-vs-float surprises.
     assert "Decimal" in env["extracted"]["decimal_serialization"]
+
+    # The document_url convention is called out so callers know to render
+    # links rather than just citing the file path.
+    assert "document_url" in env
+    assert "PUBLIC_BASE_URL" in env["document_url"]
+    assert "#page=" in env["document_url"]
