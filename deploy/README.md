@@ -96,9 +96,9 @@ MCPUrl                                                              SSHCommand  
 https://cipoc-abc123.uksouth.cloudapp.azure.com/mcp/                ssh azureuser@cipoc-abc123.uksouth.cloudapp.azure.com   cipoc-pg-abc123.postgres.database.azure.com
 ```
 
-> Use the URL **with the trailing slash** when configuring the Claude connector
-> — FastMCP's streamable-http endpoint lives at `/mcp/`. Without the slash you
-> get a 307 redirect that some clients don't follow.
+> The Claude connector URL is the **no-trailing-slash form** (e.g.
+> `.../mcp`). FastMCP/uvicorn redirect `/mcp/` → `/mcp` internally, so use
+> the canonical form to skip the redirect hop.
 
 ## 8. Wait for cloud-init to finish
 
