@@ -65,5 +65,42 @@ def scan(folder: Path | None) -> None:
     click.echo(f"enqueued {n} files")
 
 
+@cli.command()
+@click.argument("folder", type=click.Path(exists=True, file_okay=False, path_type=Path),
+                required=False)
+@click.option("--rule", "rule_filter", default=None,
+              help="Only re-extract files that resolve to this rule_id.")
+def reextract(folder: Path | None, rule_filter: str | None) -> None:
+    """Synchronously re-process every PDF under FOLDER (or WATCH_FOLDER).
+
+    Bypasses the job queue. Re-runs extraction + chunking + embedding and
+    upserts the contract / chunks. Use after a rule version bump or a chunker
+    config change so existing documents reflect the new logic.
+    """
+    from rules.registry import resolve_rule_for_path
+
+    target = folder or get_settings().watch_folder
+    pdfs = sorted(target.rglob("*.pdf"))
+    click.echo(f"found {len(pdfs)} pdfs under {target}")
+    ok = 0
+    failed = 0
+    for path in pdfs:
+        if rule_filter:
+            rule = resolve_rule_for_path(path)
+            if rule.rule_id != rule_filter:
+                continue
+        try:
+            result = pipeline.process_file(path)
+            click.echo(
+                f"OK {path.name} -> rule={result.rule_id}/{result.rule_version} "
+                f"chunks={result.num_chunks}"
+            )
+            ok += 1
+        except Exception as e:
+            click.echo(f"FAIL {path.name}: {type(e).__name__}: {e}", err=True)
+            failed += 1
+    click.echo(f"-- done: {ok} succeeded, {failed} failed")
+
+
 if __name__ == "__main__":
     cli()
