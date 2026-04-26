@@ -56,13 +56,19 @@ class Clauses(ClauseChecklistBase):
 PROMPT = """\
 You are extracting structured fields from a professional services / consulting contract.
 
-Rules:
-- Dates must be ISO 8601 (YYYY-MM-DD). Null if absent.
-- Monetary amounts: number plus ISO 4217 currency code.
+Field rules:
+- Dates ISO 8601 (YYYY-MM-DD). Null if absent.
+- Monetary amounts: number + ISO 4217 currency code.
 - `fee_model` must be one of the allowed enum values; if the contract does not \
 clearly fit, return null.
 - Do not guess. If a field is genuinely absent, return null.
-- For each clause check, return a boolean using the description as the test of presence.
+
+Clause-flag rules (non-negotiable):
+- For each `has_*` flag, set `true` only if the contract clearly contains the \
+clause described. A vague reference does not count.
+- If you set a flag to `true`, you MUST populate `source_links[<flag_name>]` \
+with the page number and a verbatim quote.
+- If you cannot find a verbatim quote that supports the flag, the flag is `false`.
 - For every populated field, populate `source_links[<field_name>]` with page \
 number and verbatim quote.
 """

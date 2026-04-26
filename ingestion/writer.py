@@ -86,8 +86,9 @@ def write_contract(
                 CAST(:source_links AS jsonb), CAST(:raw_response AS jsonb),
                 :user_id, :group_id
             )
-            ON CONFLICT (document_id, rule_id, rule_version) DO UPDATE
-            SET parties = EXCLUDED.parties,
+            ON CONFLICT (document_id, rule_id) DO UPDATE
+            SET rule_version = EXCLUDED.rule_version,
+                parties = EXCLUDED.parties,
                 effective_date = EXCLUDED.effective_date,
                 expiry_date = EXCLUDED.expiry_date,
                 currency = EXCLUDED.currency,

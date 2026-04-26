@@ -37,11 +37,18 @@ def test_saas_contract_accepts_realistic_payload() -> None:
         "has_dr_clause_evidence": "The supplier shall maintain ...",
         "has_data_residency_clause": False,
         "has_indemnity_cap": True,
+        "has_indemnity_cap_evidence": "Liability is capped at 150% of fees paid.",
         "has_audit_rights": True,
         "has_change_of_control_clause": False,
         "has_data_breach_notification": True,
+        "has_data_breach_supercap": True,
+        "has_data_breach_supercap_evidence": "Data breach liability is uncapped.",
+        "has_ip_indemnity_carveout": False,
+        "has_confidentiality_carveout": False,
+        "has_wilful_default_carveout": True,
     })
     assert clauses.has_dr_clause is True
+    assert clauses.has_data_breach_supercap is True
 
 
 def test_saas_contract_rejects_unknown_fields() -> None:
