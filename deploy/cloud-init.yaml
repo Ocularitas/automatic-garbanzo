@@ -1,0 +1,190 @@
+#cloud-config
+# Contract Intelligence POC — VM bootstrap.
+# Installs uv + Caddy, clones the repo, writes config & systemd units, brings the stack up.
+
+package_update: true
+package_upgrade: false
+packages:
+  - git
+  - curl
+  - ca-certificates
+  - debian-keyring
+  - debian-archive-keyring
+  - apt-transport-https
+  - postgresql-client
+  - build-essential
+
+write_files:
+  - path: /etc/contract-intel/env
+    permissions: '0640'
+    owner: root:root
+    content: |
+      DATABASE_URL=postgresql+psycopg://__PG_USER__:__PG_PASSWORD__@__PG_HOST__:5432/contract_intel?sslmode=require
+      ANTHROPIC_API_KEY=__ANTHROPIC_KEY__
+      ANTHROPIC_MODEL=claude-opus-4-7
+      VOYAGE_API_KEY=__VOYAGE_KEY__
+      VOYAGE_EMBEDDING_MODEL=voyage-3-large
+      VOYAGE_EMBEDDING_DIMENSIONS=1024
+      WATCH_FOLDER=/opt/contract-intel/data/watch
+      RULES_DIR=/opt/contract-intel/repo/rules
+      DEMO_USER_ID=demo-user
+      DEMO_GROUP_ID=demo-group
+      QUERY_MCP_HOST=127.0.0.1
+      QUERY_MCP_PORT=8765
+      QUERY_MCP_BEARER_TOKEN=__BEARER_TOKEN__
+
+  - path: /etc/caddy/Caddyfile
+    permissions: '0644'
+    owner: root:root
+    content: |
+      {
+        # Let's Encrypt prod is the default. Enable debug logs to journalctl.
+        log {
+          output stdout
+          format console
+        }
+      }
+
+      __CADDY_DOMAIN__ {
+        encode gzip
+
+        # Bearer-token gate. Anything without the right Authorization header is rejected
+        # before reaching the MCP server. The MCP server itself binds to 127.0.0.1.
+        @authorized header Authorization "Bearer __BEARER_TOKEN__"
+        @mcp_path   path /mcp /mcp/*
+
+        handle /healthz {
+          respond "ok" 200
+        }
+
+        handle @mcp_path {
+          handle @authorized {
+            reverse_proxy 127.0.0.1:8765 {
+              header_up X-Forwarded-Host {host}
+              header_up X-Forwarded-Proto https
+              transport http {
+                read_timeout 5m
+                write_timeout 5m
+              }
+            }
+          }
+          respond "Unauthorized" 401
+        }
+
+        handle {
+          respond "Contract Intelligence POC. MCP endpoint at /mcp/." 200
+        }
+      }
+
+  - path: /etc/systemd/system/contract-query-mcp.service
+    permissions: '0644'
+    owner: root:root
+    content: |
+      [Unit]
+      Description=Contract Intelligence query MCP server
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      User=azureuser
+      WorkingDirectory=/opt/contract-intel/repo
+      EnvironmentFile=/etc/contract-intel/env
+      ExecStart=/home/azureuser/.local/bin/uv run query-mcp
+      Restart=on-failure
+      RestartSec=5
+      StandardOutput=journal
+      StandardError=journal
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /etc/systemd/system/contract-ingestion.service
+    permissions: '0644'
+    owner: root:root
+    content: |
+      [Unit]
+      Description=Contract Intelligence ingestion watcher + worker
+      After=network-online.target contract-query-mcp.service
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      User=azureuser
+      WorkingDirectory=/opt/contract-intel/repo
+      EnvironmentFile=/etc/contract-intel/env
+      ExecStart=/home/azureuser/.local/bin/uv run ingestion watch
+      Restart=on-failure
+      RestartSec=5
+      StandardOutput=journal
+      StandardError=journal
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /opt/contract-intel/bootstrap.sh
+    permissions: '0755'
+    owner: root:root
+    content: |
+      #!/usr/bin/env bash
+      # Idempotent. Re-run after editing /etc/contract-intel/env or pulling new code.
+      set -euo pipefail
+
+      REPO_URL="__REPO_URL__"
+      REPO_BRANCH="__REPO_BRANCH__"
+      APP_DIR="/opt/contract-intel"
+      REPO_DIR="$APP_DIR/repo"
+
+      install -d -o azureuser -g azureuser "$APP_DIR" "$APP_DIR/data" "$APP_DIR/data/watch"
+      install -d -o azureuser -g azureuser \
+        "$APP_DIR/data/watch/contracts/saas" \
+        "$APP_DIR/data/watch/contracts/services" \
+        "$APP_DIR/data/watch/contracts/leases"
+
+      # uv (per-user install for azureuser)
+      if ! sudo -u azureuser test -x /home/azureuser/.local/bin/uv; then
+        sudo -u azureuser bash -lc 'curl -LsSf https://astral.sh/uv/install.sh | sh'
+      fi
+
+      # Caddy from the official Cloudsmith repo
+      if ! command -v caddy >/dev/null 2>&1; then
+        curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
+          | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+        curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
+          | tee /etc/apt/sources.list.d/caddy-stable.list
+        apt-get update
+        apt-get install -y caddy
+      fi
+
+      # Clone or update the repo
+      if [ ! -d "$REPO_DIR/.git" ]; then
+        sudo -u azureuser git clone --branch "$REPO_BRANCH" "$REPO_URL" "$REPO_DIR"
+      else
+        sudo -u azureuser git -C "$REPO_DIR" fetch origin "$REPO_BRANCH"
+        sudo -u azureuser git -C "$REPO_DIR" checkout "$REPO_BRANCH"
+        sudo -u azureuser git -C "$REPO_DIR" reset --hard "origin/$REPO_BRANCH"
+      fi
+
+      # Install Python deps
+      sudo -u azureuser bash -lc "cd $REPO_DIR && /home/azureuser/.local/bin/uv sync"
+
+      # Run migrations against Azure PG
+      sudo -u azureuser bash -lc "cd $REPO_DIR && set -a && . /etc/contract-intel/env && set +a && /home/azureuser/.local/bin/uv run alembic upgrade head"
+
+      # Caddy config + reload
+      systemctl enable --now caddy
+      systemctl reload caddy || systemctl restart caddy
+
+      # App services
+      systemctl daemon-reload
+      systemctl enable --now contract-query-mcp.service
+      systemctl enable --now contract-ingestion.service
+
+      echo "bootstrap done."
+
+runcmd:
+  - [ chmod, '0640', /etc/contract-intel/env ]
+  - [ chgrp, azureuser, /etc/contract-intel/env ]
+  - [ bash, /opt/contract-intel/bootstrap.sh ]
+
+final_message: "Contract Intelligence POC bootstrap complete after $UPTIME seconds."
