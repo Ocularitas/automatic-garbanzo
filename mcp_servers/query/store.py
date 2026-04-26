@@ -249,10 +249,11 @@ def _resolve_select_target(sel: str, row: dict[str, Any]) -> tuple[Any, str]:
         return clauses.get(sel), sel
 
     raise ValueError(
-        f"Unknown select target {sel!r}. Use a top-level field "
-        f"(see TOP_LEVEL_KEYS), a dotted path 'extracted.<name>' / "
-        f"'clauses.<name>' / 'source_links.<name>', or a bare field name "
-        f"that exists in `extracted` or `clauses` for the active rule."
+        f"Unknown select target {sel!r}. Accepted forms: "
+        f"a top-level field ({', '.join(sorted(TOP_LEVEL_KEYS))}), "
+        f"a dotted path 'extracted.<name>' / 'clauses.<name>' / "
+        f"'source_links.<name>', or a bare field name that exists in "
+        f"`extracted` or `clauses` for the active rule (see describe_schema)."
     )
 
 

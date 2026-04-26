@@ -80,9 +80,16 @@ def test_top_level_wins_over_extracted_for_overlapping_names() -> None:
     assert out[0]["annual_value"] == 145000.0  # not the string
 
 
-def test_unknown_top_level_raises() -> None:
-    with pytest.raises(ValueError, match="Unknown select target"):
+def test_unknown_top_level_raises_with_inlined_valid_keys() -> None:
+    # Error message must enumerate the actual valid top-level keys, not
+    # reference an internal identifier. Saves a follow-up call.
+    with pytest.raises(ValueError) as exc:
         _project_select([_row()], ["wibble"])
+    msg = str(exc.value)
+    assert "Unknown select target 'wibble'" in msg
+    for key in ("contract_id", "expiry_date", "annual_value", "extracted",
+                "clauses", "source_links"):
+        assert key in msg, f"error message should inline {key!r}; got: {msg}"
 
 
 def test_unknown_dotted_container_raises() -> None:
