@@ -152,6 +152,42 @@ def list_contracts(
 
 
 @mcp.tool()
+def get_clause_evidence(
+    clause_flag: str,
+    rule_id: str | None = None,
+    folder_prefix: str | None = None,
+    limit: int = 200,
+) -> dict[str, Any]:
+    """Find every contract where a named clause is *present*, with the evidence.
+
+    Inverse of `find_clause_gaps`. Use this for positive-evidence questions:
+    "show me what every SaaS contract says about indemnity caps" or
+    "which leases have a break clause and what's the exact wording?".
+
+    Returns one row per contract with parties, expiry, the verbatim clause
+    quote, and the page number — in one call. Prefer this over running
+    `query_contracts_structured` then `get_contract` per row when all you
+    need is the clause language.
+
+    Args:
+        clause_flag: The clause flag to look for, e.g. "has_indemnity_cap".
+        rule_id: Optional restriction to one rule.
+        folder_prefix: Optional substring filter on file path.
+        limit: Max results, default 200.
+    """
+    limit = max(1, min(limit, 500))
+    identity = current_identity()
+    rows = store.get_clause_evidence(
+        clause_flag=clause_flag,
+        rule_id=rule_id,
+        folder_prefix=folder_prefix,
+        limit=limit,
+        group_id=identity.group_id,
+    )
+    return {"contracts": [_jsonable(r) for r in rows]}
+
+
+@mcp.tool()
 def find_clause_gaps(
     clause_flag: str,
     rule_id: str | None = None,

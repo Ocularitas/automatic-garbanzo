@@ -228,6 +228,50 @@ def list_contracts(
     return [dict(r) for r in rows]
 
 
+def get_clause_evidence(
+    *,
+    clause_flag: str,
+    rule_id: str | None,
+    folder_prefix: str | None,
+    limit: int,
+    group_id: str,
+) -> list[dict[str, Any]]:
+    """Every contract where the named clause flag is true, with its evidence.
+
+    Returns one row per contract: parties, expiry, the verbatim quote, and the
+    page where it was found. Combines `clauses.<flag>=true`, the matching
+    `<flag>_evidence` text in the clauses JSONB, and the per-flag entry in
+    `source_links`. Single SQL query — no N+1 round trip required.
+    """
+    if not _safe_ident(clause_flag):
+        raise ValueError(f"Invalid clause name: {clause_flag}")
+    evidence_key = f"{clause_flag}_evidence"
+    sql = f"""
+        SELECT c.id AS contract_id, c.document_id,
+               c.rule_id, c.rule_version, c.parties, c.expiry_date,
+               c.clauses ->> '{evidence_key}'         AS evidence,
+               c.source_links -> '{clause_flag}' ->> 'page'  AS page,
+               c.source_links -> '{clause_flag}' ->> 'quote' AS source_quote,
+               d.file_path
+          FROM contracts c
+          JOIN documents d ON d.id = c.document_id
+         WHERE c.group_id = :group_id
+           AND COALESCE((c.clauses ->> '{clause_flag}')::bool, false) = true
+        {("AND c.rule_id = :rule_id" if rule_id else "")}
+        {("AND d.file_path LIKE :folder_pat" if folder_prefix else "")}
+         ORDER BY c.created_at DESC
+         LIMIT :limit
+    """
+    params: dict[str, Any] = {"group_id": group_id, "limit": limit}
+    if rule_id:
+        params["rule_id"] = rule_id
+    if folder_prefix:
+        params["folder_pat"] = f"%{folder_prefix}%"
+    with session_scope() as session:
+        rows = session.execute(text(sql), params).mappings().all()
+    return [dict(r) for r in rows]
+
+
 def find_clause_gaps(
     *,
     clause_flag: str,
