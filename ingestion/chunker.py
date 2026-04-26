@@ -12,8 +12,8 @@ from dataclasses import dataclass
 
 from ingestion.parser import ParsedPdf
 
-TARGET_CHUNK_CHARS = 4000   # ~1000 tokens
-OVERLAP_CHARS = 400         # ~100 tokens
+TARGET_CHUNK_CHARS = 1500   # ~375 tokens — clause-sized for typical contracts
+OVERLAP_CHARS = 200         # ~50 tokens
 MIN_CHUNK_CHARS = 200
 
 
