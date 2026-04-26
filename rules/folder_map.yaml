@@ -1,0 +1,8 @@
+# Maps top-level folder paths under WATCH_FOLDER to a rule_id.
+# Resolution is longest-prefix: a file under contracts/saas/foo.pdf matches
+# "contracts/saas" before falling through to "default".
+folders:
+  contracts/saas: saas_contract
+  contracts/services: services_contract
+  contracts/leases: lease
+default: generic_contract

@@ -45,11 +45,11 @@ folders:
 default: generic_contract
 ```
 
-The map points to a `rule_id`. The current pinned major version for that `rule_id` is read from `rules/<rule_id>/current.yaml`. The ingestion service reads the map and the pinned version at startup and stamps every extraction record with the resolved `(rule_id, rule_version)`.
+The map points to a `rule_id`. The active version for that `rule_id` is whatever `rules/<rule_id>/__init__.py` re-exports (e.g. `from .v3_1_0 import RULE`). The ingestion service reads the map at startup and stamps every extraction record with the resolved `(rule_id, rule_version)`.
 
 ## Extraction (Claude tool use)
 
-For each document, build a single tool call where the tool's input schema is the rule's Pydantic schema. Claude returns structured JSON conforming to the schema. Use Pydantic to validate; on validation failure, retry once with the validation error fed back in the prompt, then mark failed.
+For each document, build a single tool call where the tool's input schema is `rule.combined_tool_schema()` — an object with `fields`, `clauses`, and `source_links` properties built from the rule's Pydantic models. Claude fills all three in one call. Use Pydantic to validate; on validation failure, retry once with the validation error fed back in the prompt, then mark failed.
 
 Pseudo-code (confirm against current Anthropic SDK):
 

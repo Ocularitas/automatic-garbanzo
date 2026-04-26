@@ -1,0 +1,51 @@
+[project]
+name = "contract-intelligence"
+version = "0.1.0"
+description = "Document intelligence for contracts: extract, index, query via MCP."
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic>=0.40.0",
+    "voyageai>=0.3.0",
+    "pydantic>=2.8",
+    "pydantic-settings>=2.4",
+    "fastmcp>=0.2.0",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "psycopg[binary,pool]>=3.2",
+    "pgvector>=0.3",
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
+    "watchdog>=4.0",
+    "pyyaml>=6.0",
+    "pypdf>=5.0",
+    "click>=8.1",
+    "structlog>=24.1",
+    "tenacity>=8.5",
+]
+
+[project.scripts]
+ingestion = "ingestion.cli:cli"
+query-mcp = "mcp_servers.query.server:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ingestion", "mcp_servers", "shared", "rules"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
