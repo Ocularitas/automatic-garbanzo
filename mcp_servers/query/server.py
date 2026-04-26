@@ -5,16 +5,140 @@ import logging
 from typing import Any
 
 from fastmcp import FastMCP
+from sqlalchemy import text
 
 from ingestion.embedder import embed_query
 from mcp_servers.query import store
+from rules.registry import all_rules, get_rule
 from shared.config import get_settings
+from shared.db import session_scope
 from shared.identity import current_identity
 
 log = logging.getLogger(__name__)
 
 mcp = FastMCP("contract-intelligence-query")
 
+
+# --- Schema introspection ---------------------------------------------------
+
+def _type_str(annotation: Any) -> str:
+    """Render a Pydantic field annotation as a short, LLM-readable type string."""
+    s = str(annotation)
+    for prefix in ("typing.", "datetime.", "decimal."):
+        s = s.replace(prefix, "")
+    s = s.replace("NoneType", "null").replace(" | None", " | null")
+    return s
+
+
+def _build_schema_payload(include_corpus: bool = True) -> dict[str, Any]:
+    """Single source of truth for schema introspection — used by both the
+    `describe_schema` tool and the MCP resources."""
+    rules_out: list[dict[str, Any]] = []
+    for rule_id, rule in all_rules().items():
+        fields: list[dict[str, Any]] = []
+        for name, info in rule.fields_model.model_fields.items():
+            fields.append({
+                "name": name,
+                "type": _type_str(info.annotation),
+                "description": info.description or "",
+                "required": info.is_required(),
+            })
+        clause_flags: list[dict[str, Any]] = []
+        for name, info in rule.clauses_model.model_fields.items():
+            if name.endswith("_evidence"):
+                # Evidence fields are paired with flags; documenting one is enough.
+                continue
+            clause_flags.append({
+                "name": name,
+                "description": info.description or "",
+                "evidence_field": f"{name}_evidence",
+            })
+        rules_out.append({
+            "rule_id": rule_id,
+            "version": rule.version,
+            "description": rule.description,
+            "fields": fields,
+            "clause_flags": clause_flags,
+            "promoted_scalar_columns": list(rule.promoted_fields),
+        })
+
+    payload: dict[str, Any] = {"rules": rules_out}
+
+    if include_corpus:
+        identity = current_identity()
+        with session_scope() as s:
+            total = s.execute(
+                text("SELECT COUNT(*) FROM contracts WHERE group_id = :g"),
+                {"g": identity.group_id},
+            ).scalar() or 0
+            by_rule_rows = s.execute(
+                text("""
+                    SELECT rule_id, rule_version, COUNT(*) AS n
+                      FROM contracts
+                     WHERE group_id = :g
+                     GROUP BY rule_id, rule_version
+                """),
+                {"g": identity.group_id},
+            ).mappings().all()
+        by_rule: dict[str, dict[str, int]] = {}
+        for row in by_rule_rows:
+            by_rule.setdefault(row["rule_id"], {})[row["rule_version"]] = row["n"]
+        payload["corpus"] = {
+            "total_contracts": int(total),
+            "by_rule_version": by_rule,
+        }
+    return payload
+
+
+@mcp.tool()
+def describe_schema() -> dict[str, Any]:
+    """Describe the active rules, their fields, clause flags, and corpus shape.
+
+    Call this once at the start of a session to learn what's queryable before
+    composing other tools. Returns:
+      - `rules`: every active rule with `rule_id`, `version`, `description`,
+        plus the full `fields` list (name + type + description) and the
+        `clause_flags` list (name + description + paired evidence field name).
+      - `corpus`: total contract count and a breakdown by rule_id/rule_version,
+        so you can tell if a rule has been re-extracted under a new version.
+
+    Use `fields[*].name` with `query_contracts_structured`'s `select` and
+    `filters`. Use `clause_flags[*].name` with `find_clause_gaps` and
+    `get_clause_evidence`.
+
+    The schema reflects the live deployment, so if a rule has been bumped or
+    new fields added, calling this is the cheapest way to find out — no need
+    to fish through example records.
+    """
+    return _build_schema_payload(include_corpus=True)
+
+
+# --- Resources (mirror of the same data for resource-aware clients) ---------
+
+@mcp.resource("schema://rules")
+def resource_rules() -> dict[str, Any]:
+    """All active rules, summarised. No corpus stats."""
+    return _build_schema_payload(include_corpus=False)
+
+
+@mcp.resource("schema://rules/{rule_id}")
+def resource_rule(rule_id: str) -> dict[str, Any]:
+    """Full schema for one rule by rule_id."""
+    rule = get_rule(rule_id)
+    payload = _build_schema_payload(include_corpus=False)
+    matched = next((r for r in payload["rules"] if r["rule_id"] == rule_id), None)
+    if matched is None:
+        raise KeyError(rule_id)
+    return matched
+
+
+@mcp.resource("schema://corpus")
+def resource_corpus() -> dict[str, Any]:
+    """Just the corpus shape — total + per-rule_version counts."""
+    return _build_schema_payload(include_corpus=True)["corpus"]
+
+
+# --- Query tools ------------------------------------------------------------
 
 @mcp.tool()
 def vector_search(
@@ -29,6 +153,9 @@ def vector_search(
     our corpus say about indemnity caps?" or "find the renewal terms in the
     SAP contract". Each hit includes the document id, page number, file path,
     and a text snippet so the answer can be cited.
+
+    If you need to know which `rule_id` values are valid, call
+    `describe_schema` first — it returns the live list.
 
     Args:
         query: Natural language search query.
@@ -88,6 +215,9 @@ def query_contracts_structured(
     Allowed fields: rule_id, rule_version, effective_date, expiry_date,
     currency, annual_value, file_path, plus clauses.<flag_name>.
     Allowed operators: eq, ne, lt, lte, gt, gte, in, like, is_null.
+
+    Call `describe_schema` first if you don't know which clause flags exist
+    or which rule versions are in the corpus — the live list lives there.
 
     Args:
         filters: Filter dict as above.
@@ -169,6 +299,9 @@ def get_clause_evidence(
     `query_contracts_structured` then `get_contract` per row when all you
     need is the clause language.
 
+    `clause_flag` must match a flag in the active rule's checklist — call
+    `describe_schema` to see the list (`rules[*].clause_flags[*].name`).
+
     Args:
         clause_flag: The clause flag to look for, e.g. "has_indemnity_cap".
         rule_id: Optional restriction to one rule.
@@ -200,6 +333,9 @@ def find_clause_gaps(
     missing X? Examples: clause_flag="has_dr_clause" returns SaaS contracts
     without disaster recovery commitments; "has_break_clause" with
     rule_id="lease" returns leases without a tenant break right.
+
+    Call `describe_schema` first if you need the list of valid clause flags
+    for the active rules.
 
     Args:
         clause_flag: The clause flag to test, e.g. "has_dr_clause".
