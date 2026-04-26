@@ -324,9 +324,15 @@ def get_clause_evidence(
     sql = f"""
         SELECT c.id AS contract_id, c.document_id,
                c.rule_id, c.rule_version, c.parties, c.expiry_date,
-               c.clauses ->> '{evidence_key}'         AS evidence,
+               -- Single canonical evidence string. The rule prompt asks the
+               -- model to populate both clauses.<flag>_evidence and
+               -- source_links.<flag>.quote with the same verbatim quote;
+               -- COALESCE so we still surface a value if one side is missing.
+               COALESCE(
+                   c.clauses ->> '{evidence_key}',
+                   c.source_links -> '{clause_flag}' ->> 'quote'
+               ) AS evidence,
                c.source_links -> '{clause_flag}' ->> 'page'  AS page,
-               c.source_links -> '{clause_flag}' ->> 'quote' AS source_quote,
                d.file_path
           FROM contracts c
           JOIN documents d ON d.id = c.document_id
