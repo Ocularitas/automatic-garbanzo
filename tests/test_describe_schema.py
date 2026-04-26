@@ -47,3 +47,29 @@ def test_schema_payload_lists_active_rules_with_fields_and_flags() -> None:
     assert "has_dr_clause_evidence" not in flag_names
     paired = next(c for c in saas["clause_flags"] if c["name"] == "has_dr_clause")
     assert paired["evidence_field"] == "has_dr_clause_evidence"
+
+
+def test_schema_payload_includes_filter_operators() -> None:
+    payload = _build_schema_payload(include_corpus=False)
+    assert "query_filter_operators" in payload
+    op_names = {row["op"] for row in payload["query_filter_operators"]}
+    assert op_names == {"eq", "ne", "lt", "lte", "gt", "gte", "in", "like", "is_null"}
+    for row in payload["query_filter_operators"]:
+        assert row["description"]
+
+
+def test_schema_payload_includes_record_envelope() -> None:
+    payload = _build_schema_payload(include_corpus=False)
+    env = payload["record_envelope"]
+    # Each block of the persisted record is documented
+    for key in ("promoted_columns", "extracted", "clauses", "source_links", "raw_response"):
+        assert key in env, f"record_envelope missing {key!r}"
+        assert env[key].get("description"), f"{key} has no description"
+
+    # Promoted columns are listed and match what the saas_contract rule promotes
+    assert env["promoted_columns"]["names"] == [
+        "parties", "effective_date", "expiry_date", "currency", "annual_value",
+    ]
+    # The Decimal-serialization convention is called out so callers don't get
+    # caught by str-vs-float surprises.
+    assert "Decimal" in env["extracted"]["decimal_serialization"]

@@ -62,7 +62,11 @@ def _build_schema_payload(include_corpus: bool = True) -> dict[str, Any]:
             "promoted_scalar_columns": list(rule.promoted_fields),
         })
 
-    payload: dict[str, Any] = {"rules": rules_out}
+    payload: dict[str, Any] = {
+        "rules": rules_out,
+        "query_filter_operators": _query_filter_operators(),
+        "record_envelope": _record_envelope(),
+    }
 
     if include_corpus:
         identity = current_identity()
@@ -90,21 +94,104 @@ def _build_schema_payload(include_corpus: bool = True) -> dict[str, Any]:
     return payload
 
 
+def _query_filter_operators() -> list[dict[str, str]]:
+    """The full operator vocabulary `query_contracts_structured` accepts.
+
+    Sourced once here so tool descriptions don't have to repeat it. Adding an
+    operator means adding a row here and a branch in store.query_contracts_structured.
+    """
+    return [
+        {"op": "eq",      "description": "Equality. Shorthand: bare value (no operator wrapper) is treated as eq."},
+        {"op": "ne",      "description": "Not equal."},
+        {"op": "lt",      "description": "Less than. For dates and numbers."},
+        {"op": "lte",     "description": "Less than or equal."},
+        {"op": "gt",      "description": "Greater than."},
+        {"op": "gte",     "description": "Greater than or equal."},
+        {"op": "in",      "description": 'Value is in a non-empty list, e.g. {"in": ["GBP", "USD"]}.'},
+        {"op": "like",    "description": "SQL ILIKE pattern match (case-insensitive). Use % wildcards."},
+        {"op": "is_null", "description": 'Pass true to require null, false to require not-null.'},
+    ]
+
+
+def _record_envelope() -> dict[str, Any]:
+    """How a persisted contract record is shaped on read.
+
+    Useful for callers of `get_contract` and `query_contracts_structured` that
+    otherwise have to learn the shape by inspecting an example record.
+    """
+    return {
+        "summary": (
+            "A contract record is split across one set of typed scalar columns "
+            "and four JSONB blobs. Read from the column most appropriate to "
+            "the question."
+        ),
+        "promoted_columns": {
+            "description": (
+                "Indexed scalar columns lifted out of the extraction. Use these "
+                "for filtering, sorting, and any typed numeric/date read. They "
+                "are also the only columns `query_contracts_structured` accepts "
+                "as filter targets (alongside `clauses.<flag>`)."
+            ),
+            "names": ["parties", "effective_date", "expiry_date", "currency", "annual_value"],
+        },
+        "extracted": {
+            "description": (
+                "Full Pydantic dump of the rule's Fields model. Includes every "
+                "field declared by the active rule version. Same field names "
+                "as the rule's `fields[*].name`."
+            ),
+            "decimal_serialization": (
+                "Decimal values are serialized as JSON strings to preserve "
+                'precision (e.g. "145000" rather than 145000.0). For typed '
+                "numeric reads, prefer the promoted column. If reading from "
+                "`extracted`, coerce explicitly."
+            ),
+        },
+        "clauses": {
+            "description": (
+                "Clause-checklist booleans and their evidence strings. For each "
+                "clause flag named in `rules[*].clause_flags`, this object holds "
+                "two keys: `<flag_name>` (bool) and `<flag_name>_evidence` "
+                "(string or null). The evidence string is the verbatim quote "
+                "from the document."
+            ),
+        },
+        "source_links": {
+            "description": (
+                "Map of field name to {page, char_start, char_end, quote}. "
+                "Populated for any clause flag set true (the same verbatim quote "
+                "appears here and in `clauses.<flag>_evidence`) and for any "
+                "Field-model field the model chose to cite."
+            ),
+        },
+        "raw_response": {
+            "description": (
+                "The complete Anthropic API response from the most recent "
+                "extraction. Useful for debugging extraction quality; not "
+                "intended as a query target."
+            ),
+        },
+    }
+
+
 @mcp.tool()
 def describe_schema() -> dict[str, Any]:
-    """Describe the active rules, their fields, clause flags, and corpus shape.
+    """Describe the active rules, their fields, clause flags, the filter
+    operator vocabulary, the persisted record envelope, and the corpus shape.
 
     Call this once at the start of a session to learn what's queryable before
     composing other tools. Returns:
       - `rules`: every active rule with `rule_id`, `version`, `description`,
         plus the full `fields` list (name + type + description) and the
         `clause_flags` list (name + description + paired evidence field name).
-      - `corpus`: total contract count and a breakdown by rule_id/rule_version,
-        so you can tell if a rule has been re-extracted under a new version.
-
-    Use `fields[*].name` with `query_contracts_structured`'s `select` and
-    `filters`. Use `clause_flags[*].name` with `find_clause_gaps` and
-    `get_clause_evidence`.
+      - `query_filter_operators`: the operator vocabulary
+        `query_contracts_structured` accepts (eq, ne, lt, lte, gt, gte, in,
+        like, is_null), each with a one-line description.
+      - `record_envelope`: how a persisted contract record is structured on
+        read — promoted columns vs `extracted` / `clauses` / `source_links` /
+        `raw_response` JSONB blobs, including the Decimal-serialization
+        convention (string in `extracted`, float in promoted columns).
+      - `corpus`: total contract count and a breakdown by rule_id/rule_version.
 
     The schema reflects the live deployment, so if a rule has been bumped or
     new fields added, calling this is the cheapest way to find out — no need
@@ -207,20 +294,21 @@ def query_contracts_structured(
     cursor pagination.
 
     Filter shape:
-      - Equality: {"rule_id": "saas_contract"}
-      - Operators: {"expiry_date": {"lte": "2026-06-30"}}
-      - Lists: {"currency": {"in": ["GBP", "USD"]}}
-      - Clause flags: {"clauses.has_dr_clause": false}
+      - Equality (shorthand): {"rule_id": "saas_contract"}
+      - Operator wrapper:    {"expiry_date": {"lte": "2026-06-30"}}
+      - List membership:     {"currency": {"in": ["GBP", "USD"]}}
+      - Clause flags:        {"clauses.has_dr_clause": false}
 
-    Allowed fields: rule_id, rule_version, effective_date, expiry_date,
+    Allowed filter targets: rule_id, rule_version, effective_date, expiry_date,
     currency, annual_value, file_path, plus clauses.<flag_name>.
-    Allowed operators: eq, ne, lt, lte, gt, gte, in, like, is_null.
+    Allowed operators: see `describe_schema().query_filter_operators` for the
+    full vocabulary with descriptions.
 
     Call `describe_schema` first if you don't know which clause flags exist
     or which rule versions are in the corpus — the live list lives there.
 
     Args:
-        filters: Filter dict as above.
+        filters: Filter dict matching the shapes above.
         select: Optional list of fields to return; otherwise all are returned.
         limit: Page size, default 50, max 500.
         cursor: Cursor from a previous response's `next_cursor`.
