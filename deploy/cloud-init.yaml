@@ -48,16 +48,40 @@ write_files:
       __CADDY_DOMAIN__ {
         encode gzip
 
-        # Bearer-token gate. Anything without the right Authorization header is rejected
-        # before reaching the MCP server. The MCP server itself binds to 127.0.0.1.
+        # Two ways to authenticate to the MCP endpoint:
+        #
+        #   1. Path-embedded token: GET/POST https://host/<token>/mcp
+        #      (Used by the Claude custom-connector UI, which only supports
+        #       OAuth or no auth in headers.)
+        #
+        #   2. Authorization: Bearer <token> header on /mcp
+        #      (Used by curl smoke tests and any header-capable MCP client.)
+        #
+        # The MCP server itself binds to 127.0.0.1 so it's only reachable via Caddy.
+
         @authorized header Authorization "Bearer __BEARER_TOKEN__"
-        @mcp_path   path /mcp /mcp/*
+        @header_mcp path /mcp /mcp/*
+        @url_token  path /__BEARER_TOKEN__/mcp /__BEARER_TOKEN__/mcp/*
 
         handle /healthz {
           respond "ok" 200
         }
 
-        handle @mcp_path {
+        # URL-embedded token. Strip the prefix so upstream sees /mcp.
+        handle @url_token {
+          uri strip_prefix /__BEARER_TOKEN__
+          reverse_proxy 127.0.0.1:8765 {
+            header_up X-Forwarded-Host {host}
+            header_up X-Forwarded-Proto https
+            transport http {
+              read_timeout 5m
+              write_timeout 5m
+            }
+          }
+        }
+
+        # Header-authenticated path.
+        handle @header_mcp {
           handle @authorized {
             reverse_proxy 127.0.0.1:8765 {
               header_up X-Forwarded-Host {host}
@@ -72,7 +96,7 @@ write_files:
         }
 
         handle {
-          respond "Contract Intelligence POC. MCP endpoint at /mcp/." 200
+          respond "Contract Intelligence POC." 200
         }
       }
 
@@ -146,14 +170,20 @@ write_files:
         sudo -u azureuser bash -lc 'curl -LsSf https://astral.sh/uv/install.sh | sh'
       fi
 
-      # Caddy from the official Cloudsmith repo
+      # Caddy from the official Cloudsmith repo.
+      # --force-confold keeps the Caddyfile cloud-init wrote (the package ships its own
+      # default at the same path; without this flag dpkg prompts and aborts under
+      # cloud-init's stdin-less environment).
       if ! command -v caddy >/dev/null 2>&1; then
         curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
           | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
         curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
           | tee /etc/apt/sources.list.d/caddy-stable.list
         apt-get update
-        apt-get install -y caddy
+        DEBIAN_FRONTEND=noninteractive apt-get install -y \
+          -o Dpkg::Options::="--force-confdef" \
+          -o Dpkg::Options::="--force-confold" \
+          caddy
       fi
 
       # Clone or update the repo

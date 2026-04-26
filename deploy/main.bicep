@@ -272,7 +272,7 @@ resource vm 'Microsoft.Compute/virtualMachines@2024-03-01' = {
 
 // --- Outputs ---------------------------------------------------------------
 
-output mcpUrl       string = 'https://${fqdn}/mcp/'
+output mcpUrl       string = 'https://${fqdn}/mcp'
 output sshCommand   string = 'ssh ${adminUsername}@${fqdn}'
 output pgFqdn       string = pg.properties.fullyQualifiedDomainName
 output pgDatabase   string = 'contract_intel'

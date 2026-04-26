@@ -22,7 +22,7 @@ EMBEDDING_DIM = int(os.environ.get("VOYAGE_EMBEDDING_DIMENSIONS", "1024"))
 
 def upgrade() -> None:
     op.execute("CREATE EXTENSION IF NOT EXISTS vector")
-    op.execute('CREATE EXTENSION IF NOT EXISTS "pgcrypto"')
+    # gen_random_uuid() is built into PG13+ core — no pgcrypto needed.
 
     op.create_table(
         "documents",

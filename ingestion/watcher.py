@@ -43,6 +43,11 @@ class _Handler(FileSystemEventHandler):
 def enqueue_path(path: Path) -> None:
     """Hash a file and insert a pending job, deduping by content hash."""
     try:
+        if path.stat().st_size == 0:
+            # scp / rsync briefly create empty target files before streaming bytes;
+            # the on_modified event after data lands will re-trigger us.
+            log.debug("skipping zero-byte %s (likely still being written)", path.name)
+            return
         content_hash = hash_file(path)
     except FileNotFoundError:
         return  # file vanished between event and read

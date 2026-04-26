@@ -106,16 +106,28 @@ def mark_failed(session: Session, job_id: UUID, error_message: str) -> None:
 
 
 def requeue_failed(session: Session, job_id: UUID | None = None) -> int:
-    """Move failed jobs back to pending. If job_id is None, requeue all."""
+    """Move failed jobs back to pending. If job_id is None, requeue all.
+
+    Drops failed rows that share a content_hash with an already-pending or
+    -running job; otherwise the partial unique index `ix_jobs_pending_hash`
+    rejects the UPDATE.
+    """
     if job_id is None:
+        session.execute(text("""
+            DELETE FROM jobs
+             WHERE status = 'failed'
+               AND content_hash IN (
+                   SELECT content_hash FROM jobs WHERE status IN ('pending','running')
+               )
+        """))
         result = session.execute(
-            text("UPDATE jobs SET status = 'pending', error_message = NULL "
-                 "WHERE status = 'failed'")
+            text("UPDATE jobs SET status = 'pending', error_message = NULL, "
+                 "started_at = NULL WHERE status = 'failed'")
         )
     else:
         result = session.execute(
-            text("UPDATE jobs SET status = 'pending', error_message = NULL "
-                 "WHERE status = 'failed' AND id = :id"),
+            text("UPDATE jobs SET status = 'pending', error_message = NULL, "
+                 "started_at = NULL WHERE status = 'failed' AND id = :id"),
             {"id": job_id},
         )
     return result.rowcount or 0
