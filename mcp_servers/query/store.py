@@ -155,7 +155,7 @@ def query_contracts_structured(
     sql = f"""
         SELECT c.id AS contract_id, c.document_id, c.rule_id, c.rule_version,
                c.parties, c.effective_date, c.expiry_date, c.currency,
-               c.annual_value, c.clauses, c.extracted, d.file_path
+               c.annual_value, c.clauses, c.extracted, c.source_links, d.file_path
         FROM contracts c
         JOIN documents d ON d.id = c.document_id
         WHERE {where_sql}
@@ -176,10 +176,84 @@ def query_contracts_structured(
         ).decode()
 
     if select_fields:
-        allowed_keys = set(select_fields) | {"contract_id", "document_id", "file_path"}
-        rows = [{k: v for k, v in r.items() if k in allowed_keys} for r in rows]
+        rows = _project_select(rows, select_fields)
 
     return rows, next_cursor
+
+
+# Top-level keys returned by query_contracts_structured's SQL.
+TOP_LEVEL_KEYS = frozenset({
+    "contract_id", "document_id", "file_path",
+    "rule_id", "rule_version", "parties",
+    "effective_date", "expiry_date", "currency", "annual_value",
+    "clauses", "extracted", "source_links",
+})
+
+# JSONB containers a dotted-path can index into.
+JSONB_CONTAINERS = frozenset({"extracted", "clauses", "source_links"})
+
+# Always included in projected rows so callers can re-identify hits.
+ALWAYS_KEEP = ("contract_id", "document_id", "file_path")
+
+
+def _project_select(rows: list[dict[str, Any]],
+                    select_fields: list[str]) -> list[dict[str, Any]]:
+    """Project rows to the requested fields. Three forms accepted:
+
+      * Top-level field name, e.g. "expiry_date" — returns the column.
+      * Dotted path into a JSONB container, e.g. "extracted.data_breach_notification_window_hours"
+        or "clauses.has_dr_clause" — returns the leaf, keyed by the dotted name.
+      * Bare leaf name resolved against `extracted`, then `clauses`. Useful for
+        callers who don't want to know which container a field lives in.
+
+    Unknown selectors raise ValueError. The earlier silent-drop behaviour
+    made it impossible to tell "field is null" from "select was malformed".
+
+    Always emits `contract_id`, `document_id`, `file_path` so callers can
+    re-identify rows.
+    """
+    out_rows: list[dict[str, Any]] = []
+    for row in rows:
+        out: dict[str, Any] = {k: row.get(k) for k in ALWAYS_KEEP}
+        for sel in select_fields:
+            value, output_key = _resolve_select_target(sel, row)
+            out[output_key] = value
+        out_rows.append(out)
+    return out_rows
+
+
+def _resolve_select_target(sel: str, row: dict[str, Any]) -> tuple[Any, str]:
+    """Resolve a single select expression against one row.
+
+    Returns (value, output_key). Raises ValueError on unknown."""
+    if "." in sel:
+        container, _, leaf = sel.partition(".")
+        if container not in JSONB_CONTAINERS:
+            raise ValueError(
+                f"Unknown select target {sel!r}. Dotted paths must start with one of "
+                f"{sorted(JSONB_CONTAINERS)}, got {container!r}."
+            )
+        if not _safe_ident(leaf):
+            raise ValueError(f"Invalid leaf name in select: {leaf!r}")
+        blob = row.get(container) or {}
+        return blob.get(leaf), sel  # output keyed by the dotted name
+
+    # Bare name — resolve against top-level, then extracted, then clauses.
+    if sel in TOP_LEVEL_KEYS:
+        return row.get(sel), sel
+    extracted = row.get("extracted") or {}
+    if sel in extracted:
+        return extracted.get(sel), sel
+    clauses = row.get("clauses") or {}
+    if sel in clauses:
+        return clauses.get(sel), sel
+
+    raise ValueError(
+        f"Unknown select target {sel!r}. Use a top-level field "
+        f"(see TOP_LEVEL_KEYS), a dotted path 'extracted.<name>' / "
+        f"'clauses.<name>' / 'source_links.<name>', or a bare field name "
+        f"that exists in `extracted` or `clauses` for the active rule."
+    )
 
 
 def get_contract(contract_id: UUID, group_id: str) -> dict[str, Any] | None:

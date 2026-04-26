@@ -304,12 +304,27 @@ def query_contracts_structured(
     Allowed operators: see `describe_schema().query_filter_operators` for the
     full vocabulary with descriptions.
 
-    Call `describe_schema` first if you don't know which clause flags exist
-    or which rule versions are in the corpus — the live list lives there.
+    Select shape (the `select` arg projects the result rows):
+      - Top-level field:  "expiry_date"        — returns the column.
+      - Dotted JSONB path:
+          "extracted.data_breach_notification_window_hours"
+          "clauses.has_dr_clause"
+          "source_links.has_dr_clause"
+        Returns the leaf value, keyed by the dotted name in the response.
+      - Bare leaf name:   "data_breach_notification_window_hours"
+        Resolved against `extracted` then `clauses`.
+      - Unknown selectors raise an error rather than being silently dropped,
+        so a null in the response means "no value", not "you typed it wrong."
+      - `contract_id`, `document_id`, `file_path` are always included.
+
+    Call `describe_schema` first if you don't know which clause flags exist,
+    which rule versions are in the corpus, or how a persisted record is
+    structured — the live answers are all there.
 
     Args:
         filters: Filter dict matching the shapes above.
-        select: Optional list of fields to return; otherwise all are returned.
+        select: Optional list of fields/paths to project; otherwise the full
+            row (including the JSONB blobs) is returned.
         limit: Page size, default 50, max 500.
         cursor: Cursor from a previous response's `next_cursor`.
     """
