@@ -323,7 +323,12 @@ def query_contracts_structured(
         Resolved against `extracted` then `clauses`.
       - Unknown selectors raise an error rather than being silently dropped,
         so a null in the response means "no value", not "you typed it wrong."
-      - `contract_id`, `document_id`, `file_path` are always included.
+      - `contract_id`, `document_id`, `file_path`, `document_url` are always
+        included.
+      - Selecting a clause flag (bare `has_*`, dotted `clauses.has_*`, or its
+        `_evidence` partner) also injects `<flag>_source_url` — a page-anchored
+        URL built from `source_links.<flag>.page`. Use it to cite directly
+        rather than reconstructing the URL client-side.
 
     Call `describe_schema` first if you don't know which clause flags exist,
     which rule versions are in the corpus, or how a persisted record is

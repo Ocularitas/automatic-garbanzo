@@ -16,6 +16,7 @@ from uuid import UUID
 from sqlalchemy import text
 
 from shared.db import session_scope
+from shared.urls import build_document_url
 
 
 # --- Vector search ------------------------------------------------------------
@@ -211,15 +212,70 @@ def _project_select(rows: list[dict[str, Any]],
 
     Always emits `contract_id`, `document_id`, `file_path` so callers can
     re-identify rows.
+
+    For any selector that resolves to a clause flag (bare `has_*`, dotted
+    `clauses.has_*`, or the matching `_evidence` field), this also injects
+    `<flag>_source_url` — a page-anchored URL constructed from the entry in
+    `source_links.<flag>` so a chat client can cite directly without a
+    follow-up round trip.
     """
     out_rows: list[dict[str, Any]] = []
     for row in rows:
         out: dict[str, Any] = {k: row.get(k) for k in ALWAYS_KEEP}
+        flag_urls_to_add: set[str] = set()
+
         for sel in select_fields:
             value, output_key = _resolve_select_target(sel, row)
             out[output_key] = value
+
+            flag = _clause_flag_from_selector(sel, row)
+            if flag:
+                flag_urls_to_add.add(flag)
+
+        for flag in flag_urls_to_add:
+            url = _flag_source_url(row, flag)
+            if url:
+                out[f"{flag}_source_url"] = url
+
         out_rows.append(out)
     return out_rows
+
+
+def _clause_flag_from_selector(sel: str, row: dict[str, Any]) -> str | None:
+    """If a selector resolves to a clause-checklist field, return the flag name
+    (with any `_evidence` suffix stripped). Otherwise return None."""
+    if "." in sel:
+        container, _, leaf = sel.partition(".")
+        if container != "clauses":
+            return None
+        flag = leaf
+    else:
+        clauses = row.get("clauses") or {}
+        if sel not in clauses:
+            return None
+        flag = sel
+
+    if flag.endswith("_evidence"):
+        flag = flag[: -len("_evidence")]
+    return flag
+
+
+def _flag_source_url(row: dict[str, Any], flag: str) -> str | None:
+    """Construct a page-anchored URL for a clause flag, using the row's
+    `source_links.<flag>.page` and `file_path`.
+
+    Returns None if `source_links` has no entry for the flag — the row-level
+    `document_url` is still available as a fallback document-level citation."""
+    source_links = row.get("source_links") or {}
+    link = source_links.get(flag)
+    if not isinstance(link, dict):
+        return None
+    raw_page = link.get("page")
+    try:
+        page = int(raw_page) if raw_page is not None else None
+    except (TypeError, ValueError):
+        page = None
+    return build_document_url(row.get("file_path"), page=page)
 
 
 def _resolve_select_target(sel: str, row: dict[str, Any]) -> tuple[Any, str]:
