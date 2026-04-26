@@ -146,14 +146,20 @@ write_files:
         sudo -u azureuser bash -lc 'curl -LsSf https://astral.sh/uv/install.sh | sh'
       fi
 
-      # Caddy from the official Cloudsmith repo
+      # Caddy from the official Cloudsmith repo.
+      # --force-confold keeps the Caddyfile cloud-init wrote (the package ships its own
+      # default at the same path; without this flag dpkg prompts and aborts under
+      # cloud-init's stdin-less environment).
       if ! command -v caddy >/dev/null 2>&1; then
         curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
           | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
         curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
           | tee /etc/apt/sources.list.d/caddy-stable.list
         apt-get update
-        apt-get install -y caddy
+        DEBIAN_FRONTEND=noninteractive apt-get install -y \
+          -o Dpkg::Options::="--force-confdef" \
+          -o Dpkg::Options::="--force-confold" \
+          caddy
       fi
 
       # Clone or update the repo
