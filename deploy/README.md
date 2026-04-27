@@ -177,12 +177,15 @@ Settings → Connectors → Add custom connector:
 - **URL:** `$CONNECTOR_URL` (the one ending `/<bearer_token>/mcp`)
 - **Advanced settings:** leave OAuth Client ID and Secret **empty**
 
-Claude probes the endpoint; on success the connector lists six tools
-(`vector_search`, `query_contracts_structured`, `get_contract`,
-`list_contracts`, `find_clause_gaps`, `get_clause_evidence`).
+Claude probes the endpoint; on success the connector lists seven tools
+(`describe_schema`, `vector_search`, `query_contracts_structured`,
+`get_contract`, `list_contracts`, `find_clause_gaps`, `get_clause_evidence`).
 
 Quick sanity check in any chat: *"What tools do you have available from the
-Contract Intelligence connector?"* — expect Claude to recite all six.
+Contract Intelligence connector?"* — expect Claude to recite all seven.
+A good follow-up is *"Use describe_schema and tell me which rules are
+active and what clause flags exist."* — that confirms the orientation
+tool works end-to-end.
 
 > Treat the connector URL as a credential. Anyone with the URL can read the
 > corpus. Until phase 2 (Entra OAuth) lands, this is the security boundary.

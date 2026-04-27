@@ -9,7 +9,7 @@ intent), `deploy/README.md` (first-time deploy), and `deploy/RESUME.md` (day-2 o
 A folder watcher picks up new contract PDFs, sends each to Claude with a rule's
 Pydantic schema as a tool, and writes the structured result + per-clause
 evidence + vector chunks to Postgres. A separate process exposes that corpus
-as five MCP tools. The user's own Claude account is the front end: they ask
+as seven MCP tools. The user's own Claude account is the front end: they ask
 questions, Claude composes the tools.
 
 ## Components
@@ -46,7 +46,7 @@ questions, Claude composes the tools.
                               │ (systemd: contract-      │
                               │  query-mcp.service)      │
                               │                          │
-                              │  five FastMCP tools      │
+                              │  seven FastMCP tools     │
                               │  bound to 127.0.0.1:8765 │
                               └────────────┬─────────────┘
                                            │ proxied
@@ -172,13 +172,14 @@ Re-extraction is triggered manually with `uv run ingestion reextract`. The
 pipeline upserts on `(document_id, rule_id)` so the operation is idempotent
 and replaces the contract row in place.
 
-## The five MCP tools
+## The seven MCP tools
 
 Designed to compose. Claude (the agent in the user's chat) chooses; the user
 asks a question. Each tool is orthogonal — no overlapping responsibility.
 
 | Tool | When it's the right one |
 |---|---|
+| `describe_schema` | Orientation. Returns active rules + fields + clause flags + filter operators + record envelope + corpus shape in one call. The cheapest way for an agent to learn what's queryable, especially after a rule version bump. |
 | `vector_search` | Discovery / RAG: "what does the corpus say about X?". |
 | `query_contracts_structured` | Aggregation, filtered lists, anything where the answer is a SQL query over extracted fields. |
 | `find_clause_gaps` | Negative space: "which contracts are missing X?" — directly maps to a `clauses.<flag>=false` filter. |
@@ -186,8 +187,10 @@ asks a question. Each tool is orthogonal — no overlapping responsibility.
 | `get_contract` | Full record for a single contract id, used after one of the search tools. |
 | `list_contracts` | Browse, not analyse. "What's in here?". |
 
-(Six, not five, after `get_clause_evidence` was added in response to a
-demo conversation that surfaced an N+1 cost problem.)
+The query MCP also exposes three matching MCP **resources** —
+`schema://rules`, `schema://rules/{rule_id}`, `schema://corpus` — backed
+by the same data as `describe_schema` for clients that prefer the
+resource channel.
 
 The tool *descriptions* are user-facing in the sense that Claude reads them
 when choosing a tool. They are part of the contract surface; treat changes
