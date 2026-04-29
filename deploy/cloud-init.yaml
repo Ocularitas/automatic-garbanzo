@@ -32,6 +32,7 @@ write_files:
       QUERY_MCP_HOST=127.0.0.1
       QUERY_MCP_PORT=8765
       QUERY_MCP_BEARER_TOKEN=__BEARER_TOKEN__
+      PUBLIC_BASE_URL=https://__CADDY_DOMAIN__/__BEARER_TOKEN__
 
   - path: /etc/caddy/Caddyfile
     permissions: '0644'
@@ -61,14 +62,15 @@ write_files:
 
         @authorized header Authorization "Bearer __BEARER_TOKEN__"
         @header_mcp path /mcp /mcp/*
-        @url_token  path /__BEARER_TOKEN__/mcp /__BEARER_TOKEN__/mcp/*
+        @url_mcp    path /__BEARER_TOKEN__/mcp /__BEARER_TOKEN__/mcp/*
+        @url_docs   path /__BEARER_TOKEN__/docs/*
 
         handle /healthz {
           respond "ok" 200
         }
 
-        # URL-embedded token. Strip the prefix so upstream sees /mcp.
-        handle @url_token {
+        # URL-embedded token, MCP path. Strip the prefix so upstream sees /mcp.
+        handle @url_mcp {
           uri strip_prefix /__BEARER_TOKEN__
           reverse_proxy 127.0.0.1:8765 {
             header_up X-Forwarded-Host {host}
@@ -80,7 +82,16 @@ write_files:
           }
         }
 
-        # Header-authenticated path.
+        # URL-embedded token, source documents. File-serves the watch folder
+        # so chat citations can deep-link into the PDFs (with #page=N anchors).
+        handle @url_docs {
+          uri strip_prefix /__BEARER_TOKEN__/docs
+          root * /opt/contract-intel/data/watch
+          file_server
+          header Content-Disposition "inline"
+        }
+
+        # Header-authenticated path (curl smoke tests; not used by Claude).
         handle @header_mcp {
           handle @authorized {
             reverse_proxy 127.0.0.1:8765 {

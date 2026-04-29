@@ -16,6 +16,7 @@ from uuid import UUID
 from sqlalchemy import text
 
 from shared.db import session_scope
+from shared.urls import build_document_url
 
 
 # --- Vector search ------------------------------------------------------------
@@ -155,7 +156,7 @@ def query_contracts_structured(
     sql = f"""
         SELECT c.id AS contract_id, c.document_id, c.rule_id, c.rule_version,
                c.parties, c.effective_date, c.expiry_date, c.currency,
-               c.annual_value, c.clauses, c.extracted, d.file_path
+               c.annual_value, c.clauses, c.extracted, c.source_links, d.file_path
         FROM contracts c
         JOIN documents d ON d.id = c.document_id
         WHERE {where_sql}
@@ -176,10 +177,140 @@ def query_contracts_structured(
         ).decode()
 
     if select_fields:
-        allowed_keys = set(select_fields) | {"contract_id", "document_id", "file_path"}
-        rows = [{k: v for k, v in r.items() if k in allowed_keys} for r in rows]
+        rows = _project_select(rows, select_fields)
 
     return rows, next_cursor
+
+
+# Top-level keys returned by query_contracts_structured's SQL.
+TOP_LEVEL_KEYS = frozenset({
+    "contract_id", "document_id", "file_path",
+    "rule_id", "rule_version", "parties",
+    "effective_date", "expiry_date", "currency", "annual_value",
+    "clauses", "extracted", "source_links",
+})
+
+# JSONB containers a dotted-path can index into.
+JSONB_CONTAINERS = frozenset({"extracted", "clauses", "source_links"})
+
+# Always included in projected rows so callers can re-identify hits.
+ALWAYS_KEEP = ("contract_id", "document_id", "file_path")
+
+
+def _project_select(rows: list[dict[str, Any]],
+                    select_fields: list[str]) -> list[dict[str, Any]]:
+    """Project rows to the requested fields. Three forms accepted:
+
+      * Top-level field name, e.g. "expiry_date" — returns the column.
+      * Dotted path into a JSONB container, e.g. "extracted.data_breach_notification_window_hours"
+        or "clauses.has_dr_clause" — returns the leaf, keyed by the dotted name.
+      * Bare leaf name resolved against `extracted`, then `clauses`. Useful for
+        callers who don't want to know which container a field lives in.
+
+    Unknown selectors raise ValueError. The earlier silent-drop behaviour
+    made it impossible to tell "field is null" from "select was malformed".
+
+    Always emits `contract_id`, `document_id`, `file_path` so callers can
+    re-identify rows.
+
+    For any selector that resolves to a clause flag (bare `has_*`, dotted
+    `clauses.has_*`, or the matching `_evidence` field), this also injects
+    `<flag>_source_url` — a page-anchored URL constructed from the entry in
+    `source_links.<flag>` so a chat client can cite directly without a
+    follow-up round trip.
+    """
+    out_rows: list[dict[str, Any]] = []
+    for row in rows:
+        out: dict[str, Any] = {k: row.get(k) for k in ALWAYS_KEEP}
+        flag_urls_to_add: set[str] = set()
+
+        for sel in select_fields:
+            value, output_key = _resolve_select_target(sel, row)
+            out[output_key] = value
+
+            flag = _clause_flag_from_selector(sel, row)
+            if flag:
+                flag_urls_to_add.add(flag)
+
+        for flag in flag_urls_to_add:
+            url = _flag_source_url(row, flag)
+            if url:
+                out[f"{flag}_source_url"] = url
+
+        out_rows.append(out)
+    return out_rows
+
+
+def _clause_flag_from_selector(sel: str, row: dict[str, Any]) -> str | None:
+    """If a selector resolves to a clause-checklist field, return the flag name
+    (with any `_evidence` suffix stripped). Otherwise return None."""
+    if "." in sel:
+        container, _, leaf = sel.partition(".")
+        if container != "clauses":
+            return None
+        flag = leaf
+    else:
+        clauses = row.get("clauses") or {}
+        if sel not in clauses:
+            return None
+        flag = sel
+
+    if flag.endswith("_evidence"):
+        flag = flag[: -len("_evidence")]
+    return flag
+
+
+def _flag_source_url(row: dict[str, Any], flag: str) -> str | None:
+    """Construct a page-anchored URL for a clause flag, using the row's
+    `source_links.<flag>.page` and `file_path`.
+
+    Returns None if `source_links` has no entry for the flag — the row-level
+    `document_url` is still available as a fallback document-level citation."""
+    source_links = row.get("source_links") or {}
+    link = source_links.get(flag)
+    if not isinstance(link, dict):
+        return None
+    raw_page = link.get("page")
+    try:
+        page = int(raw_page) if raw_page is not None else None
+    except (TypeError, ValueError):
+        page = None
+    return build_document_url(row.get("file_path"), page=page)
+
+
+def _resolve_select_target(sel: str, row: dict[str, Any]) -> tuple[Any, str]:
+    """Resolve a single select expression against one row.
+
+    Returns (value, output_key). Raises ValueError on unknown."""
+    if "." in sel:
+        container, _, leaf = sel.partition(".")
+        if container not in JSONB_CONTAINERS:
+            raise ValueError(
+                f"Unknown select target {sel!r}. Dotted paths must start with one of "
+                f"{sorted(JSONB_CONTAINERS)}, got {container!r}."
+            )
+        if not _safe_ident(leaf):
+            raise ValueError(f"Invalid leaf name in select: {leaf!r}")
+        blob = row.get(container) or {}
+        return blob.get(leaf), sel  # output keyed by the dotted name
+
+    # Bare name — resolve against top-level, then extracted, then clauses.
+    if sel in TOP_LEVEL_KEYS:
+        return row.get(sel), sel
+    extracted = row.get("extracted") or {}
+    if sel in extracted:
+        return extracted.get(sel), sel
+    clauses = row.get("clauses") or {}
+    if sel in clauses:
+        return clauses.get(sel), sel
+
+    raise ValueError(
+        f"Unknown select target {sel!r}. Accepted forms: "
+        f"a top-level field ({', '.join(sorted(TOP_LEVEL_KEYS))}), "
+        f"a dotted path 'extracted.<name>' / 'clauses.<name>' / "
+        f"'source_links.<name>', or a bare field name that exists in "
+        f"`extracted` or `clauses` for the active rule (see describe_schema)."
+    )
 
 
 def get_contract(contract_id: UUID, group_id: str) -> dict[str, Any] | None:
@@ -249,9 +380,15 @@ def get_clause_evidence(
     sql = f"""
         SELECT c.id AS contract_id, c.document_id,
                c.rule_id, c.rule_version, c.parties, c.expiry_date,
-               c.clauses ->> '{evidence_key}'         AS evidence,
+               -- Single canonical evidence string. The rule prompt asks the
+               -- model to populate both clauses.<flag>_evidence and
+               -- source_links.<flag>.quote with the same verbatim quote;
+               -- COALESCE so we still surface a value if one side is missing.
+               COALESCE(
+                   c.clauses ->> '{evidence_key}',
+                   c.source_links -> '{clause_flag}' ->> 'quote'
+               ) AS evidence,
                c.source_links -> '{clause_flag}' ->> 'page'  AS page,
-               c.source_links -> '{clause_flag}' ->> 'quote' AS source_quote,
                d.file_path
           FROM contracts c
           JOIN documents d ON d.id = c.document_id
