@@ -26,6 +26,7 @@ dependencies = [
 [project.scripts]
 ingestion = "ingestion.cli:cli"
 query-mcp = "mcp_servers.query.server:main"
+health-check = "shared.healthcheck_cli:main"
 
 [dependency-groups]
 dev = [
