@@ -18,6 +18,8 @@ contract-intelligence/
 ├── ARCHITECTURE.md     # Current shape: components, data model, tools
 ├── DECISIONS.md        # Design rules — what to preserve when extending
 ├── ROADMAP.md          # Deferred work with sketches and prerequisites
+├── LESSONS.md          # Symptom / cause / fix for pain points we've already hit
+├── DEMO.md             # Repeatable demo script for new audiences
 ├── README.md           # You are here
 │
 ├── ingestion/          # Watcher, jobs, extraction, chunking, embedding
@@ -123,6 +125,10 @@ Anthropic tokens).
   of the road. Then `ROADMAP.md` for what's already on the deferred list.
 - **Want to add a rule or tweak an existing one?** Read `rules/CLAUDE.md`.
 - **Want to operate the running system?** Read `deploy/RESUME.md`.
+- **Showing it to a new audience?** Read `DEMO.md` — a repeatable script
+  with expected tool sequences, answer shapes, and pre-flight checklist.
+- **Hit something that's not working?** `LESSONS.md` — known pain points
+  with symptom / cause / fix.
 - **Taking this to production at ABP?** Start with `deploy/PRODUCTION.md` —
   the target APIM + Entra + SharePoint topology and the ABP-IT-input
   checklist for the team's first sprint.
