@@ -1,7 +1,7 @@
 """Ingestion CLI."""
 from __future__ import annotations
 
-import logging
+import os
 import threading
 from pathlib import Path
 
@@ -9,14 +9,13 @@ import click
 
 from ingestion import pipeline, watcher, worker
 from shared.config import get_settings
+from shared.logging import configure_logging
 
 
 def _setup_logging(verbose: bool) -> None:
-    logging.basicConfig(
-        level=logging.DEBUG if verbose else logging.INFO,
-        format="%(asctime)s %(levelname)-5s %(name)s | %(message)s",
-        datefmt="%H:%M:%S",
-    )
+    if verbose:
+        os.environ.setdefault("LOG_LEVEL", "DEBUG")
+    configure_logging()
 
 
 @click.group()

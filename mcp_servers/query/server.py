@@ -581,13 +581,16 @@ def _maybe_with_url(
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)-5s %(name)s | %(message)s",
-        datefmt="%H:%M:%S",
-    )
+    from shared.logging import configure_logging
+
+    configure_logging()
     settings = get_settings()
-    log.info("query MCP server starting on %s:%s", settings.query_mcp_host, settings.query_mcp_port)
+    log.info(
+        "query MCP server starting",
+        host=settings.query_mcp_host,
+        port=settings.query_mcp_port,
+        oauth_enabled=settings.mcp_oauth_enabled,
+    )
     mcp.run(
         transport="streamable-http",
         host=settings.query_mcp_host,
