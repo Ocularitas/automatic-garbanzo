@@ -261,7 +261,7 @@ def resource_rules() -> dict[str, Any]:
 @mcp.resource("schema://rules/{rule_id}")
 def resource_rule(rule_id: str) -> dict[str, Any]:
     """Full schema for one rule by rule_id."""
-    rule = get_rule(rule_id)
+    get_rule(rule_id)  # raises KeyError on unknown rule_id — input validation
     payload = _build_schema_payload(include_corpus=False)
     matched = next((r for r in payload["rules"] if r["rule_id"] == rule_id), None)
     if matched is None:
