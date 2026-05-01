@@ -122,30 +122,45 @@ read per file event; trivial.
 - When adding a new ingestion phase, place the writes inside a single
   database transaction with the job-status update.
 
-## 6. Auth is URL-embedded bearer for POC, Entra OAuth for production
+## 6. Auth is URL-embedded bearer for POC, APIM-fronted Entra OAuth for production
 
-**Decision.** The MCP endpoint sits behind Caddy at
-`https://<fqdn>/<TOKEN>/mcp`, with a parallel `/<TOKEN>/docs/*` route for
-source-document delivery. The MCP server itself binds to localhost. A
-header-bearer alternative (`/mcp` with `Authorization: Bearer <token>`)
-exists for `curl` smoke tests.
+**Decision.** Two phases:
+
+- **POC (today).** The MCP endpoint sits behind Caddy at
+  `https://<fqdn>/<TOKEN>/mcp`, with a parallel `/<TOKEN>/docs/*` route for
+  source-document delivery. The MCP server binds to localhost. A
+  header-bearer alternative (`/mcp` with `Authorization: Bearer <token>`)
+  exists for `curl` smoke tests.
+
+- **Production (target).** Azure API Management is the public-facing
+  gateway. APIM does the OAuth 2.1 flow with Entra, validates JWTs on
+  every request, and applies rate-limiting / throttling / monitoring.
+  FastMCP optionally also validates JWTs as defence-in-depth via the
+  `MCP_OAUTH_*` env vars (`shared.config.Settings`, `_build_auth_provider`
+  in `mcp_servers/query/server.py`). The `/.well-known/oauth-protected-resource`
+  endpoint (RFC 9728) is exposed automatically when those env vars are
+  set. TLS terminates at APIM. Source documents flow direct from
+  SharePoint, not the gateway. The Caddy URL-token path is removed.
 
 **Why.** Anthropic's custom-connector UI in `claude.ai` accepts only OAuth
 or no auth — there's no header-bearer config. URL-embedded token is the
-pragmatic stop-gap. Entra OAuth (matching the production path in the root
-`CLAUDE.md`) is the planned replacement; FastMCP supports it natively via
-JWT verification + OAuth-protected-resource metadata.
+pragmatic POC stop-gap. APIM is Microsoft's reference architecture for
+this exact scenario and matches the patterns ABP IT uses for other
+internal APIs; choosing it lifts auth, governance, and observability
+out of our codebase and into a managed service.
 
 **Future work must.**
-- Treat the connector URL as a credential. Anyone with the URL has the
-  whole corpus.
-- When Entra OAuth lands, remove the URL-token Caddy path and the
-  header-bearer path together — keep one auth model.
-- Don't hardcode the token anywhere outside `/etc/contract-intel/env`
+- During POC: treat the connector URL as a credential. Anyone with the URL
+  has the whole corpus.
+- When migrating to OAuth: remove the URL-token Caddy path and the
+  header-bearer path together. Keep one auth model.
+- Don't hardcode the POC token anywhere outside `/etc/contract-intel/env`
   and `/etc/caddy/Caddyfile`. The token rotation recipe in
   `deploy/RESUME.md` depends on this.
+- Don't hardcode tenant ids, client ids, or scopes — they go through
+  `MCP_OAUTH_*` env vars only. `deploy/PRODUCTION.md` is the runbook.
 
-## 7. Document URLs: bare for document-level, page-anchored for clause-level
+## 7. Document URLs: bare for document-level, page-anchored for clause-level; SharePoint as source-of-record in production
 
 **Decision.** Every result row that references a document includes
 `document_url`. For results that have a natural page (vector hits,
@@ -153,8 +168,9 @@ clause-evidence rows), the URL ends in `#page=N`. For document-level
 results (list, structured filter, the get_contract envelope), `document_url`
 is the bare URL. When the agent selects a clause flag in
 `query_contracts_structured`, an additional `<flag>_source_url` is injected
-with the page anchor. URLs are constructed from `PUBLIC_BASE_URL`; if it's
-unset, the URL key is omitted, not nulled.
+with the page anchor. URLs are constructed via `shared.urls.build_document_url`
+from a `SourceLocator` (file_path + optional sharepoint_url); if neither
+form resolves, the URL key is omitted, not nulled.
 
 **Why.** The whole point of source linkback is the user clicking through to
 the actual paragraph. A bare document URL forces the reader to scroll; a
@@ -162,14 +178,28 @@ page-anchored URL closes the audit loop in one click. We omit rather than
 null because a `null` looks like a deliberate "no source" rather than "no
 URL configured."
 
+In the production target, **SharePoint serves the bytes, not the gateway.**
+Once the SharePoint connector is live, the documents table carries a
+`sharepoint_url` per record and the URL helper resolves to it before
+falling back to the watch-folder/Caddy form. Bytes never traverse APIM;
+the user's M365 SSO session opens the document directly, with all of
+SharePoint's existing audit / DLP / governance intact.
+
 **Future work must.**
 - When adding a new tool that returns documents or clauses, thread
   `document_url` through using the `_maybe_with_url` helper (or its
   equivalent for new shapes).
 - Page anchors are the lowest-common-denominator that works in every
   browser. Don't ship features that require a custom PDF viewer.
-- When `PUBLIC_BASE_URL` is unset, omit URL keys silently — local dev
-  shouldn't see broken-link `null`s.
+  SharePoint's M365 viewer may not honour `#page=N` — see the
+  page-anchor test in `ROADMAP.md` and `deploy/PRODUCTION.md`.
+- When the URL helper returns None, omit URL keys silently — local dev
+  and any document outside the addressable surface shouldn't see
+  broken-link `null`s.
+- Don't add a new pattern where the MCP tool returns document bytes
+  inline. That collapses the audit trail, blows up context cost, and
+  defeats SharePoint's native viewer. The MCP returns *evidence + a
+  link*; SharePoint serves the bytes.
 
 ## 8. `describe_schema` is the orientation tool, and must stay live
 

@@ -1,11 +1,11 @@
-"""Unit tests for `shared.urls.build_document_url`."""
+"""Unit tests for `shared.urls.build_document_url` and `SourceLocator`."""
 from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
 
-from shared.urls import build_document_url
+from shared.urls import SourceLocator, build_document_url
 
 
 @pytest.fixture
@@ -70,3 +70,56 @@ def test_url_treats_zero_or_negative_page_as_no_anchor(watch_root: Path) -> None
     pdf = watch_root / "contracts" / "saas" / "01_brightwave_saas_erp.pdf"
     assert "#page=" not in (build_document_url(str(pdf), page=0) or "")
     assert "#page=" not in (build_document_url(str(pdf), page=-3) or "")
+
+
+# --- SourceLocator paths -----------------------------------------------------
+
+def test_locator_with_sharepoint_url_wins_over_file_path(watch_root: Path) -> None:
+    """SharePoint is the production source-of-record; if both are set, SP wins.
+
+    Watch-folder serving is the POC fallback only — once SharePoint connector
+    is live the watch folder may not even exist for a given document."""
+    pdf = watch_root / "contracts" / "saas" / "01_brightwave_saas_erp.pdf"
+    locator = SourceLocator(
+        file_path=str(pdf),
+        sharepoint_url="https://abp.sharepoint.com/sites/contracts/Brightwave.pdf",
+    )
+    url = build_document_url(locator, page=4)
+    assert url == "https://abp.sharepoint.com/sites/contracts/Brightwave.pdf#page=4"
+
+
+def test_locator_sharepoint_only(watch_root: Path) -> None:
+    """No file_path needed when the document lives in SharePoint."""
+    locator = SourceLocator(
+        sharepoint_url="https://abp.sharepoint.com/sites/contracts/Helio.pdf"
+    )
+    url = build_document_url(locator, page=2)
+    assert url == "https://abp.sharepoint.com/sites/contracts/Helio.pdf#page=2"
+
+
+def test_locator_file_path_only_falls_back_to_caddy_form(watch_root: Path) -> None:
+    pdf = watch_root / "contracts" / "saas" / "01_brightwave_saas_erp.pdf"
+    locator = SourceLocator(file_path=str(pdf))
+    url = build_document_url(locator, page=4)
+    assert url is not None
+    assert "/docs/contracts/saas/01_brightwave_saas_erp.pdf" in url
+    assert url.endswith("#page=4")
+
+
+def test_bare_string_still_works_for_back_compat(watch_root: Path) -> None:
+    """Existing call sites pass row['file_path'] directly. Must keep working."""
+    pdf = watch_root / "contracts" / "saas" / "01_brightwave_saas_erp.pdf"
+    url = build_document_url(str(pdf), page=4)
+    assert url is not None
+    assert "/docs/contracts/saas/01_brightwave_saas_erp.pdf" in url
+
+
+def test_empty_locator_returns_none() -> None:
+    assert build_document_url(SourceLocator()) is None
+
+
+def test_locator_coerce_handles_three_input_shapes() -> None:
+    assert SourceLocator.coerce(None) is None
+    assert SourceLocator.coerce("/some/path").file_path == "/some/path"
+    sl = SourceLocator(sharepoint_url="https://x")
+    assert SourceLocator.coerce(sl) is sl  # same object, not re-wrapped

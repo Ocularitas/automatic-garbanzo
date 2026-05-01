@@ -154,26 +154,97 @@ button is human. Don't collapse layers — that's the architectural moat.
 
 ## Production-readiness
 
-### Entra OAuth (replaces URL-embedded bearer)
+### APIM-fronted Entra OAuth (replaces URL-embedded bearer)
 
 **Why.** The URL-token model is fine for a closed POC but not for any
-deployment touching real corporate data. The CLAUDE.md's Phase 2 production
-path goes through Microsoft's APIM + Entra reference architecture.
+deployment touching real corporate data. Microsoft's reference architecture
+puts Azure API Management in front of the MCP server; APIM does the OAuth
+flow and JWT validation, applies rate limiting / throttling / monitoring,
+and lets the backend MCP server stay simple. This is also the pattern ABP
+IT operates other internal APIs under, which significantly de-risks the
+hand-off. See `deploy/PRODUCTION.md` for the full target topology.
 
 **Shape.**
-1. Register an Entra app: redirect URIs for the Claude connector callback.
-2. FastMCP advertises OAuth-protected-resource metadata at
-   `/.well-known/oauth-protected-resource` pointing at Entra.
-3. FastMCP's `BearerAuthProvider` validates Entra-issued JWTs via the JWKS
-   URI.
-4. Caddy URL-token paths and the header-bearer path get removed in the
-   same change.
+1. **Code hooks already exist.** `_build_auth_provider` in
+   `mcp_servers/query/server.py` reads `MCP_OAUTH_*` env vars; when set,
+   FastMCP validates JWTs and exposes `/.well-known/oauth-protected-resource`
+   per RFC 9728. When unset, no-op (current POC behaviour). Tests cover
+   the gating in `tests/test_oauth_wiring.py`.
+2. **Entra app registration** (manual, ABP-tenant-specific):
+   - Register the MCP API as an application
+   - Add a redirect URI for Claude's connector callback
+   - Define scopes (e.g. `corpus.read`)
+   - Pre-authorise the Claude connector as a known client (Entra's native
+     Dynamic Client Registration is partial; pre-authorisation is the
+     standard workaround)
+3. **APIM provisioning** (Bicep): public-facing endpoint, custom domain
+   with TLS, OAuth flow policy pointing at the Entra tenant, JWT
+   validation policy, rate-limit policy, monitoring via Application
+   Insights, reverse-proxy to the MCP server on a private endpoint.
+4. **Migration cutover:**
+   - Set `MCP_OAUTH_*` env vars on the deployed VM (or container)
+   - Restart the MCP server — JWT validation is now active alongside the
+     URL-token path
+   - Cut Claude connector over to the APIM-fronted URL; verify
+   - Remove the URL-token Caddy paths and the header-bearer path
+   - Caddy may go away entirely if APIM also serves doc URLs (see the
+     SharePoint connector entry below — likely it doesn't, because
+     SharePoint serves directly)
 
-**Prerequisites.** None technical, but: real auth implies real users,
-which implies real `user_id` / `group_id` (the placeholder is in
-`shared/identity.py`). Both swaps land together.
+**Prerequisites.**
+- ABP tenant id, app-registration permissions
+- Decision on scope vocabulary
+- Decision on whether documents stay in the watch folder (Caddy
+  continues, gated by a different mechanism) or move to SharePoint
+  (Caddy goes away — see entry below)
+- Real `user_id` / `group_id` mapping from JWT claims (today's placeholder
+  is `shared/identity.py`)
 
-**Status.** Specified; deferred until Mac mini / production deployment.
+**Status.** Code hooks landed; Bicep / Entra app reg / cutover deferred
+until ABP team kicks off.
+
+### SharePoint connector + SharePoint-served document URLs
+
+**Why.** Production target makes SharePoint the source-of-truth for
+contract documents. Once the connector is live, the watch-folder /
+Caddy serving disappears — bytes flow direct from SharePoint to the
+user's M365 session. ABP IT keeps existing DLP / governance / audit
+because the documents never leave SharePoint.
+
+**Shape.**
+1. **Schema additions** to `documents`:
+   - `sharepoint_drive_id` (text, nullable)
+   - `sharepoint_item_id` (text, nullable)
+   - `sharepoint_url` (text, nullable) — web-viewable URL
+   - Migration: `0003_documents_sharepoint_columns`
+2. **Ingestion-side connector:** new `ingestion/sharepoint.py` (parallel
+   to the watcher) that pages through Microsoft Graph for files in scope,
+   downloads each, and runs the existing pipeline. The connector populates
+   the SharePoint columns at ingest time. The watch-folder watcher stays
+   for local dev / fallback.
+3. **`SourceLocator` already supports it.** `shared/urls.py` returns the
+   SharePoint URL when present, falling back to the watch-folder form
+   otherwise. Tests cover both paths.
+4. **`document_url` per record** flips to SharePoint URLs in production
+   without any tool-surface change.
+
+**Prerequisites.**
+- ABP tenant + SharePoint sites identified
+- Service principal or managed identity with Graph read access
+- Policy decision: full mirror vs lazy fetch (POC suggests full mirror —
+  embeddings need the bytes anyway, and re-embedding on read is wasteful)
+
+**Page anchor caveat.** SharePoint's M365 Viewer may or may not honour
+`#page=N` depending on tenant configuration. Quick test before
+committing: drop a PDF in SharePoint, share a link with `#page=2`, click
+from a browser, observe. If it fails, fallback options:
+- Try `#search=<verbatim quote>` — some viewers honour this
+- Surface page number prominently in the response text alongside the
+  document link (no functional regression, slightly worse UX)
+
+**Status.** Schema + connector deferred; URL-helper ready
+(`SourceLocator.sharepoint_url` is already wired through). The team's
+sprint is the natural home for this.
 
 ### Decimal alignment between `extracted` and promoted columns
 
