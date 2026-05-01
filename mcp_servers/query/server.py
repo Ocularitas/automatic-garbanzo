@@ -10,14 +10,56 @@ from sqlalchemy import text
 from ingestion.embedder import embed_query
 from mcp_servers.query import store
 from rules.registry import all_rules, get_rule
-from shared.config import get_settings
+from shared.config import Settings, get_settings
 from shared.db import session_scope
 from shared.identity import current_identity
 from shared.urls import build_document_url
 
 log = logging.getLogger(__name__)
 
-mcp = FastMCP("contract-intelligence-query")
+
+def _build_auth_provider(settings: Settings) -> Any:
+    """Return a FastMCP auth provider when OAuth env vars are set, else None.
+
+    When this returns a provider, FastMCP automatically:
+      - Validates incoming bearer JWTs against the JWKS at every request
+        (audience, issuer, expiry, signature, optional scopes)
+      - Exposes `/.well-known/oauth-protected-resource` per RFC 9728 so
+        OAuth-aware MCP clients (including Claude with the connector
+        configured for OAuth) can discover the authorization server.
+
+    When this returns None, FastMCP runs without auth — the URL-token
+    Caddy gate in the POC topology is the sole auth layer. Production
+    deployments behind APIM should set the env vars; APIM and FastMCP
+    then validate JWTs as defence-in-depth.
+    """
+    if not settings.mcp_oauth_enabled:
+        log.info("MCP OAuth disabled (env vars unset). Running without JWT validation.")
+        return None
+
+    # Imported lazily so the dependency footprint and import cost only land
+    # when OAuth is actually configured.
+    from fastmcp.server.auth.providers.jwt import JWTVerifier
+
+    log.info(
+        "MCP OAuth enabled. issuer=%s audience=%s scopes=%s",
+        settings.mcp_oauth_issuer,
+        settings.mcp_oauth_audience,
+        settings.mcp_oauth_required_scopes_list or "(any)",
+    )
+    return JWTVerifier(
+        jwks_uri=settings.mcp_oauth_jwks_uri,
+        issuer=settings.mcp_oauth_issuer,
+        audience=settings.mcp_oauth_audience,
+        required_scopes=settings.mcp_oauth_required_scopes_list or None,
+        base_url=settings.public_base_url or None,
+    )
+
+
+mcp = FastMCP(
+    "contract-intelligence-query",
+    auth=_build_auth_provider(get_settings()),
+)
 
 
 # --- Schema introspection ---------------------------------------------------
@@ -219,7 +261,7 @@ def resource_rules() -> dict[str, Any]:
 @mcp.resource("schema://rules/{rule_id}")
 def resource_rule(rule_id: str) -> dict[str, Any]:
     """Full schema for one rule by rule_id."""
-    rule = get_rule(rule_id)
+    get_rule(rule_id)  # raises KeyError on unknown rule_id — input validation
     payload = _build_schema_payload(include_corpus=False)
     matched = next((r for r in payload["rules"] if r["rule_id"] == rule_id), None)
     if matched is None:
@@ -539,13 +581,16 @@ def _maybe_with_url(
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)-5s %(name)s | %(message)s",
-        datefmt="%H:%M:%S",
-    )
+    from shared.logging import configure_logging
+
+    configure_logging()
     settings = get_settings()
-    log.info("query MCP server starting on %s:%s", settings.query_mcp_host, settings.query_mcp_port)
+    log.info(
+        "query MCP server starting",
+        host=settings.query_mcp_host,
+        port=settings.query_mcp_port,
+        oauth_enabled=settings.mcp_oauth_enabled,
+    )
     mcp.run(
         transport="streamable-http",
         host=settings.query_mcp_host,
